@@ -14,10 +14,20 @@
     "author": "",
     "license": "ISC",
     "dependencies": {
-        "express": "^4.18.1",
+        "@aws-sdk/client-s3": "^3.377.0",
+        "@aws-sdk/lib-storage": "^3.377.0",
+        "aws-sdk": "^2.1422.0",
+        "axios": "^1.4.0",
+        "express": "^4.18.2",
+        "form-data": "^4.0.0",
+        "haversine": "^1.1.1",
+        "mongodb": "^5.7.0",
+        "path": "^0.12.7",
         "pdfkit": "^0.13.0",
         "request": "^2.88.2",
-        "whatsappcloudapi_wrapper": "^1.0.11"
+        "util": "^0.12.5",
+        "uuid": "^9.0.0",
+        "whatsappcloudapi_wrapper": "^1.0.13"
     },
     "devDependencies": {
         "nodemon": "^2.0.16"

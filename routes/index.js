@@ -1,357 +1,540 @@
 'use strict';
 const router = require('express').Router();
-
+const { MongoClient, ObjectId } = require('mongodb'); // Se eliminó la importación innecesaria de ObjectId
+const axios = require('axios');
+const FormData = require('form-data');
+const path = require('path');
+const { v4: uuidv4 } = require('uuid');
 const WhatsappCloudAPI = require('whatsappcloudapi_wrapper');
+const listOfSections = require('../utils/imprudences');
+const calculateRisk = require('../utils/riskcalc')
+const downloadAndUploadToS3 = require('../utils/upload');
+const getCoordinatesFromLocation = require('../utils/coordinatesLocation'); // Adjust the path accordingly
+
+
+const mongoClient = new MongoClient('mongodb+srv://secureapp:xwtjbuZGXRjYD1nf@cluster0.gahyus1.mongodb.net/');
+let conversationsCollection;
+let vehiclesCollection;
+let driversCollection;
+let companiesCollection;
+let reportsCollection;
+
+mongoClient.connect()
+  .then(() => {
+    console.log('Connected to MongoDB');
+    const db = mongoClient.db('driport');
+    conversationsCollection = db.collection('conversations');
+    vehiclesCollection = db.collection('vehicles');
+    driversCollection = db.collection('drivers');
+    companiesCollection = db.collection('companies');
+    reportsCollection = db.collection('reports');
+  })
+  .catch((error) => {
+    console.error('Error connecting to MongoDB:', error);
+    process.exit(1);
+  });
 
 const Whatsapp = new WhatsappCloudAPI({
-    accessToken: process.env.Meta_WA_accessToken,
-    senderPhoneNumberId: process.env.Meta_WA_SenderPhoneNumberId,
-    WABA_ID: process.env.Meta_WA_wabaId,
+  accessToken: process.env.Meta_WA_accessToken,
+  senderPhoneNumberId: process.env.Meta_WA_SenderPhoneNumberId,
+  WABA_ID: process.env.Meta_WA_wabaId,
 });
 
-const EcommerceStore = require('./../utils/ecommerce_store.js');
-let Store = new EcommerceStore();
-const CustomerSession = new Map();
+router.get('/meta_wa_driports_callbackurl', (req, res) => {
+  try {
+    console.log('GET: Someone is pinging me!');
 
-router.get('/meta_wa_callbackurl', (req, res) => {
-    try {
-        console.log('GET: Someone is pinging me!');
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
 
-        let mode = req.query['hub.mode'];
-        let token = req.query['hub.verify_token'];
-        let challenge = req.query['hub.challenge'];
+    if (mode && token && mode === 'subscribe' && process.env.Meta_WA_VerifyToken === token) {
+      return res.status(200).send(challenge);
+    } else {
+      return res.sendStatus(403);
+    }
+  } catch (error) {
+    console.error({ error });
+    return res.sendStatus(500);
+  }
+});
 
-        if (
-            mode &&
-            token &&
-            mode === 'subscribe' &&
-            process.env.Meta_WA_VerifyToken === token
-        ) {
-            return res.status(200).send(challenge);
+router.post('/meta_wa_driports_callbackurl', async (req, res) => {
+  console.log('POST: Someone is pinging me!');
+  try {
+    let data = Whatsapp.parseMessage(req.body);
+
+    if (data && data.isMessage && !data.isNotificationMessage) {
+      let incomingMessage = data.message;
+      let incomingText = incomingMessage?.text?.body || '';
+      let recipientPhone = incomingMessage?.from?.phone || '';
+      let recipientName = incomingMessage?.from?.name || '';
+      let typeOfMsg = incomingMessage.type
+      let message_id = incomingMessage.message_id
+
+      let conversation = await conversationsCollection.findOne({ sender: recipientPhone, isCompleted: false });
+      console.log('Todos los mensajes:');
+      if (data.isMessage) {
+        console.log(incomingMessage);
+      }
+
+      if (!conversation) {
+        const uniqueId = uuidv4();
+        const newConversation = {
+          sender: recipientPhone,
+          profileName: recipientPhone,
+          uniqueId: uniqueId,
+          step: 0,
+          data: {},
+          messages: [{ sender: recipientPhone, text: incomingText, timestamp: new Date() }],
+          isCompleted: false,
+        };
+        const result = await conversationsCollection.insertOne(newConversation);
+        newConversation._id = result.insertedId;
+        conversation = newConversation;
+      } else {
+        conversation.messages.push({ sender: recipientPhone, text: incomingText, timestamp: new Date() });
+        // Verificar si la conversación anterior está completada
+        if (conversation.isCompleted) {
+          conversation.uniqueId = uuidv4();
+          conversation.isCompleted = false;
+          conversation.step = 0;
+          conversation.data = {};
+          conversation.messages = [{ sender: recipientPhone, text: incomingText, timestamp: new Date() }];
+          const result = await conversationsCollection.insertOne(conversation);
+          conversation._id = result.insertedId;
+        }
+      }
+
+      const messageLowerCase = incomingText.toLowerCase();
+      const match = messageLowerCase.match(/^stickerid: (\w+)$/);
+      let vehicle = null;
+
+  switch (conversation.step) {
+    case 0:
+      if (match) {
+        const stickerID = match[1];
+        vehicle = await vehiclesCollection.findOne({ stickerID: stickerID });
+        if (vehicle) {
+          conversation.data.vehicle = vehicle;
+          let companyId = vehicle.companyId;
+          let company = await companiesCollection.findOne({ _id: new ObjectId(companyId) });
+          conversation.data.companyId = companyId;
+          // Verificar si se encontró la empresa y si tiene un nombre válido
+          let companyName = company ? company.companyName : 'Nombre de Empresa No Disponible';
+  
+          const message = `Gracias. Encontramos el siguiente vehículo:\n\n*Marca*: ${vehicle.brand}\n*Modelo*: ${vehicle.model}\n*Año*: ${vehicle.year}\n*Color*: ${vehicle.color}\n*Placa*: ${vehicle.plate.toUpperCase()}\n*Empresa*: ${companyName}\n\n¿Es este el vehículo que deseas reportar?`;
+          await Whatsapp.sendSimpleButtons({
+            recipientPhone: recipientPhone,
+            message: message,
+            listOfButtons: [
+              {
+                title: 'Si',
+                id: 'is_vehicle_yes',
+              },
+              {
+                title: 'No',
+                id: 'is_vehicle_no', 
+              },
+            ],
+          });
+          conversation.step = 2; // Salta al caso 2
         } else {
-            return res.sendStatus(403);
+          await Whatsapp.sendText({
+            recipientPhone: recipientPhone,
+            message: `No pudimos encontrar el vehículo que intentas reportar. Por favor, verifica el *stickerID* e inténtalo nuevamente.`,
+          });
+          conversation.step = 0; // Regresa al caso 0
         }
-    } catch (error) {
-        console.error({ error });
-        return res.sendStatus(500);
+      } else {
+        await Whatsapp.sendText({
+          recipientPhone: recipientPhone,
+          message: `*Hola ${recipientName}*, soy el asistente de reportes de imprudencias. Por favor, ingresa el *stickerID* o la *placa* del vehículo que deseas reportar.`,
+        });
+        conversation.step++;
+      }
+      break;
+  
+  case 1:
+    if (match) {
+      const stickerID = match[1];
+      vehicle = await vehiclesCollection.findOne({ stickerID: stickerID });
+    } else {
+      vehicle = await vehiclesCollection.findOne({ plate: messageLowerCase });
     }
-});
+    if (vehicle) {
+      let companyId = vehicle.companyId;
+      let company = await companiesCollection.findOne({ _id: new ObjectId(companyId) });
+      // Verificar si se encontró la empresa y si tiene un nombre válido
+      let companyName = company ? company.companyName : 'Nombre de Empresa No Disponible';
+      conversation.data.vehicle = vehicle;
+      const message = `Gracias. Encontramos el siguiente vehículo:\n\n*Marca*: ${vehicle.brand}\n*Modelo*: ${vehicle.model}\n*Año*: ${vehicle.year}\n*Color*: ${vehicle.color}\n*Placa*: ${vehicle.plate.toUpperCase()}\n*Empresa*: ${companyName}\n\n¿Es este el vehículo que deseas reportar?`;
+      await Whatsapp.sendSimpleButtons({
+        recipientPhone: recipientPhone,
+        message: message,
+        listOfButtons: [
+          {
+            title: 'Si',
+            id: 'is_vehicle_yes',
+          },
+          {
+            title: 'No',
+            id: 'is_vehicle_no',
+          },
+        ],
+      });
+      conversation.step++;
+    } else {
+      await Whatsapp.sendText({
+        recipientPhone: recipientPhone,
+        message: `No pudimos encontrar el vehículo que intentas reportar. Por favor, verifica el *stickerID* o la *placa* e inténtalo nuevamente.`,
+      });
+      conversation.step = 1;
+    }
+    break;
 
-router.post('/meta_wa_callbackurl', async (req, res) => {
-    console.log('POST: Someone is pinging me!');
-    try {
-        let data = Whatsapp.parseMessage(req.body);
+  case 2:
+    if (incomingMessage.button_reply && incomingMessage.button_reply.id === 'is_vehicle_yes') {
+      await Whatsapp.sendRadioButtons({
+        recipientPhone: recipientPhone,
+        headerText: 'Selecciona tipo de Imprudencias',
+        bodyText: 'Tu reporte puede marcar la diferencia para crear un entorno vial más seguro. \n\nPor favor selecciona la imprudencia cometida:',
+        footerText: 'Powered by: Driports',
+        listOfSections, // Asegúrate de tener la lista de secciones aquí definida previamente.
+      });
+      conversation.step++;
+    } else if (incomingMessage.button_reply && incomingMessage.button_reply.id === 'is_vehicle_no') {
+      await Whatsapp.sendText({
+        recipientPhone: recipientPhone,
+        message: 'Lo siento por el error. Por favor, ingresa nuevamente la placa del vehículo que deseas reportar.',
+      });
+      conversation.step = 1;
+    } else {
+      await Whatsapp.sendText({
+        recipientPhone: recipientPhone,
+        message: 'No entendí tu respuesta, por favor confirma si el vehículo es el correcto.',
+      });
+      await Whatsapp.sendSimpleButtons({
+        recipientPhone: recipientPhone,
+        message: '¿Es este el vehículo que deseas reportar?',
+        listOfButtons: [
+          {
+            title: 'Si',
+            id: 'is_vehicle_yes',
+          },
+          {
+            title: 'No',
+            id: 'is_vehicle_no',
+          },
+        ],
+      });
+    }
+    break;
 
-        if (data?.isMessage) {
-            let incomingMessage = data.message;
-            let recipientPhone = incomingMessage.from.phone; // extract the phone number of sender
-            let recipientName = incomingMessage.from.name;
-            let typeOfMsg = incomingMessage.type; // extract the type of message (some are text, others are images, others are responses to buttons etc...)
-            let message_id = incomingMessage.message_id; // extract the message id
+  case 3:
+    if (incomingMessage.list_reply && incomingMessage.list_reply.id) {
+      let idFound = false;
+      for (let section of listOfSections) {
+        if (section.rows.some((row) => row.id === incomingMessage.list_reply.id)) {
+          idFound = true;
+          break;
+        }
+      }
 
-            // Start of cart logic
-            if (!CustomerSession.get(recipientPhone)) {
-                CustomerSession.set(recipientPhone, {
-                    cart: [],
-                });
-            }
+      if (idFound) {
+        conversation.data.reportType = incomingMessage.list_reply.id;
+        await Whatsapp.sendSimpleButtons({
+          recipientPhone: recipientPhone,
+          message: '¿Deseas agregar más detalles sobre la imprudencia?',
+          listOfButtons: [
+            {
+              type: 'button_reply',
+              title: 'Sí',
+              id: 'yes_details',
+            },
+            {
+              type: 'button_reply',
+              title: 'No',
+              id: 'no_details',
+            },
+          ],
+        });
+        conversation.step++;
+      } else if (!incomingMessage.button_reply) {
+        await Whatsapp.sendText({
+          recipientPhone: recipientPhone,
+          message: 'No entendí tu respuesta. Por favor, selecciona el tipo de imprudencia que deseas reportar nuevamente.',
+        });
+      }
+    } 
+    break;
 
-            let addToCart = async ({ product_id, recipientPhone }) => {
-                let product = await Store.getProductById(product_id);
-                if (product.status === 'success') {
-                    CustomerSession.get(recipientPhone).cart.push(product.data);
-                }
+    case 4:
+  if (incomingMessage.button_reply) {
+    if (incomingMessage.button_reply.id === 'yes_details') {
+      await Whatsapp.sendText({
+        recipientPhone: recipientPhone,
+        message: 'Por favor, proporciona más detalles sobre la imprudencia.',
+      });
+      // Incrementar el paso después de enviar el mensaje solicitando más detalles
+      conversation.step++;
+    } else if (incomingMessage.button_reply.id === 'no_details') {
+      conversation.data.reportDetails = "no details provided by reporter";
+      conversation.step = 6;
+      await Whatsapp.sendSimpleButtons({
+        recipientPhone: recipientPhone,
+        message: '¿Deseas agregar alguna imagen o video para soportar tu reporte?',
+        listOfButtons: [
+          {
+            type: 'button_reply',
+            title: 'Sí',
+            id: 'yes_media',
+          },
+          {
+            type: 'button_reply',
+            title: 'No',
+            id: 'no_media',
+          },
+        ],
+      });
+    }
+  } else {
+    await Whatsapp.sendSimpleButtons({
+      recipientPhone: recipientPhone,
+      message: 'No entendi tu respuesta. ¿Deseas agregar más detalles sobre la imprudencia?',
+      listOfButtons: [
+        {
+          type: 'button_reply',
+          title: 'Sí',
+          id: 'yes_details',
+        },
+        {
+          type: 'button_reply',
+          title: 'No',
+          id: 'no_details',
+        },
+      ],
+    });
+  }
+  break;
+
+case 5:
+  if (typeOfMsg === 'text_message') {
+    conversation.data.reportDetails = incomingText;
+    await Whatsapp.sendSimpleButtons({
+      recipientPhone: recipientPhone,
+      message: 'Gracias. ¿Deseas agregar alguna imagen o video para soportar tu reporte?',
+      listOfButtons: [
+        {
+          type: 'button_reply',
+          title: 'Sí',
+          id: 'yes_media',
+        },
+        {
+          type: 'button_reply',
+          title: 'No',
+          id: 'no_media',
+        },
+      ],
+    });
+    conversation.step++;
+  } else {
+    await Whatsapp.sendSimpleButtons({
+      recipientPhone: recipientPhone,
+      message: 'No entendí tu respuesta. ¿Deseas agregar alguna imagen o video para soportar tu reporte?',
+      listOfButtons: [
+        {
+          type: 'button_reply',
+          title: 'Sí',
+          id: 'yes_media',
+        },
+        {
+          type: 'button_reply',
+          title: 'No',
+          id: 'no_media',
+        },
+      ],
+    });
+  }
+  break; 
+     
+  case 6:
+    if (incomingMessage.button_reply && incomingMessage.button_reply.id === 'yes_media') {
+        await Whatsapp.sendText({
+          recipientPhone: recipientPhone,
+          message: 'Por favor, envia tu imagen o video.',
+        });
+    } else if (incomingMessage.image && incomingMessage.image.mime_type && incomingMessage.image.mime_type.includes('image')) {
+        await downloadAndUploadToS3(incomingMessage.image.id);
+        await Whatsapp.sendText({
+          recipientPhone: recipientPhone,
+          message: 'Gracias, hemos recibido tu imagen. Envíanos la ubicación del incidente o escribe la dirección donde ocurrió para que podamos rastrear mejor el incidente.',
+        });
+        conversation.step++;
+    } else if (incomingMessage.video && incomingMessage.video.mime_type && incomingMessage.video.mime_type.includes('video')) {
+        await downloadAndUploadToS3(incomingMessage.video.id);
+        await Whatsapp.sendText({
+          recipientPhone: recipientPhone,
+          message: 'Gracias, hemos recibido tu video. Envíanos la ubicación del incidente o escribe la dirección donde ocurrió para que podamos rastrear mejor el incidente.',
+        });
+        conversation.step++;
+    } else if (incomingMessage.button_reply && incomingMessage.button_reply.id === 'no_media') {
+        await Whatsapp.sendText({
+          recipientPhone: recipientPhone,
+          message: 'Gracias. Envíanos la ubicación del incidente o escribe la dirección donde ocurrió para que podamos rastrear mejor el incidente.',
+        });
+        conversation.step++;
+    } else {
+        await Whatsapp.sendText({
+          recipientPhone: recipientPhone,
+          message: 'No entendí tu respuesta. Por favor, envía una imagen o video nuevamente.',
+        });
+    }
+    break;
+
+    case 7:
+      let location = null;
+      if (incomingMessage.type === 'location_message') {
+        location = {
+          latitude: incomingMessage.location.latitude,
+          longitude: incomingMessage.location.longitude,
+        };
+        conversation.step++;
+      } else if (incomingMessage.type === 'text_message') {
+          const coordinatesAndAddress = await getCoordinatesFromLocation(incomingText);
+          if (coordinatesAndAddress) {
+            const [coordinates, addressByMapbox] = coordinatesAndAddress;
+            location = {
+              latitude: coordinates[1],
+              longitude: coordinates[0],
+              addressByMapbox: addressByMapbox,
+              userText: incomingText,
             };
-
-            let listOfItemsInCart = ({ recipientPhone }) => {
-                let total = 0;
-                let products = CustomerSession.get(recipientPhone).cart;
-                total = products.reduce(
-                    (acc, product) => acc + product.price,
-                    total
-                );
-                let count = products.length;
-                return { total, products, count };
+          } else {
+            location = {
+              userText: incomingText,
             };
-
-            let clearCart = ({ recipientPhone }) => {
-                CustomerSession.get(recipientPhone).cart = [];
-            };
-            // End of cart logic
-
-            if (typeOfMsg === 'text_message') {
-                await Whatsapp.sendSimpleButtons({
-                    message: `Hey ${recipientName}, \nYou are speaking to a chatbot.\nWhat do you want to do next?`,
-                    recipientPhone: recipientPhone,
-                    listOfButtons: [
-                        {
-                            title: 'View some products',
-                            id: 'see_categories',
-                        },
-                        {
-                            title: 'Speak to a human',
-                            id: 'speak_to_human',
-                        },
-                    ],
-                });
-            }
-
-            if (typeOfMsg === 'radio_button_message') {
-                let selectionId = incomingMessage.list_reply.id;
-
-                if (selectionId.startsWith('product_')) {
-                    let product_id = selectionId.split('_')[1];
-                    let product = await Store.getProductById(product_id);
-                    const {
-                        price,
-                        title,
-                        description,
-                        category,
-                        image: imageUrl,
-                        rating,
-                    } = product.data;
-
-                    let emojiRating = (rvalue) => {
-                        rvalue = Math.floor(rvalue || 0); // generate as many star emojis as whole ratings
-                        let output = [];
-                        for (var i = 0; i < rvalue; i++) output.push('⭐');
-                        return output.length ? output.join('') : 'N/A';
-                    };
-
-                    let text = `_Title_: *${title.trim()}*\n\n\n`;
-                    text += `_Description_: ${description.trim()}\n\n\n`;
-                    text += `_Price_: $${price}\n`;
-                    text += `_Category_: ${category}\n`;
-                    text += `${
-                        rating?.count || 0
-                    } shoppers liked this product.\n`;
-                    text += `_Rated_: ${emojiRating(rating?.rate)}\n`;
-
-                    await Whatsapp.sendImage({
-                        recipientPhone,
-                        url: imageUrl,
-                        caption: text,
-                    });
-
-                    await Whatsapp.sendSimpleButtons({
-                        message: `Here is the product, what do you want to do next?`,
-                        recipientPhone: recipientPhone,
-                        message_id,
-                        listOfButtons: [
-                            {
-                                title: 'Add to cart🛒',
-                                id: `add_to_cart_${product_id}`,
-                            },
-                            {
-                                title: 'Speak to a human',
-                                id: 'speak_to_human',
-                            },
-                            {
-                                title: 'See more products',
-                                id: 'see_categories',
-                            },
-                        ],
-                    });
-                }
-            }
-
-            if (typeOfMsg === 'simple_button_message') {
-                let button_id = incomingMessage.button_reply.id;
-
-                if (button_id === 'speak_to_human') {
-                    // respond with a list of human resources
-                    await Whatsapp.sendText({
-                        recipientPhone: recipientPhone,
-                        message: `Not to brag, but unlike humans, chatbots are super fast⚡, we never sleep, never rest, never take lunch🍽 and can multitask.\n\nAnway don't fret, a hoooooman will 📞contact you soon.\n\nWanna blast☎ his/her phone😈?\nHere are the contact details:`,
-                    });
-
-                    await Whatsapp.sendContact({
-                        recipientPhone: recipientPhone,
-                        contact_profile: {
-                            addresses: [
-                                {
-                                    city: 'Nairobi',
-                                    country: 'Kenya',
-                                },
-                            ],
-                            name: {
-                                first_name: 'Daggie',
-                                last_name: 'Blanqx',
-                            },
-                            org: {
-                                company: 'Mom-N-Pop Shop',
-                            },
-                            phones: [
-                                {
-                                    phone: '+1 (555) 025-3483',
-                                },
-                                {
-                                    phone: '+254 712345678',
-                                },
-                            ],
-                        },
-                    });
-                }
-                if (button_id === 'see_categories') {
-                    let categories = await Store.getAllCategories();
-
-                    await Whatsapp.sendSimpleButtons({
-                        message: `We have several categories.\nChoose one of them.`,
-                        recipientPhone: recipientPhone,
-                        message_id,
-                        listOfButtons: categories.data
-                            .slice(0, 3)
-                            .map((category) => ({
-                                title: category,
-                                id: `category_${category}`,
-                            })),
-                    });
-                }
-
-                if (button_id.startsWith('category_')) {
-                    let selectedCategory = button_id.split('category_')[1];
-                    let listOfProducts = await Store.getProductsInCategory(
-                        selectedCategory
-                    );
-
-                    let listOfSections = [
-                        {
-                            title: `🏆 Top 3: ${selectedCategory}`.substring(
-                                0,
-                                24
-                            ),
-                            rows: listOfProducts.data
-                                .map((product) => {
-                                    let id = `product_${product.id}`.substring(
-                                        0,
-                                        256
-                                    );
-                                    let title = product.title.substring(0, 21);
-                                    let description =
-                                        `${product.price}\n${product.description}`.substring(
-                                            0,
-                                            68
-                                        );
-
-                                    return {
-                                        id,
-                                        title: `${title}...`,
-                                        description: `$${description}...`,
-                                    };
-                                })
-                                .slice(0, 10),
-                        },
-                    ];
-
-                    await Whatsapp.sendRadioButtons({
-                        recipientPhone: recipientPhone,
-                        headerText: `#BlackFriday Offers: ${selectedCategory}`,
-                        bodyText: `Our Santa 🎅🏿 has lined up some great products for you based on your previous shopping history.\n\nPlease select one of the products below:`,
-                        footerText: 'Powered by: BMI LLC',
-                        listOfSections,
-                    });
-                }
-
-                if (button_id.startsWith('add_to_cart_')) {
-                    let product_id = button_id.split('add_to_cart_')[1];
-                    await addToCart({ recipientPhone, product_id });
-                    let numberOfItemsInCart = listOfItemsInCart({
-                        recipientPhone,
-                    }).count;
-
-                    await Whatsapp.sendSimpleButtons({
-                        message: `Your cart has been updated.\nNumber of items in cart: ${numberOfItemsInCart}.\n\nWhat do you want to do next?`,
-                        recipientPhone: recipientPhone,
-                        message_id,
-                        listOfButtons: [
-                            {
-                                title: 'Checkout 🛍️',
-                                id: `checkout`,
-                            },
-                            {
-                                title: 'See more products',
-                                id: 'see_categories',
-                            },
-                        ],
-                    });
-                }
-
-                if (button_id === 'checkout') {
-                    let finalBill = listOfItemsInCart({ recipientPhone });
-                    let invoiceText = `List of items in your cart:\n`;
-
-                    finalBill.products.forEach((item, index) => {
-                        let serial = index + 1;
-                        invoiceText += `\n#${serial}: ${item.title} @ $${item.price}`;
-                    });
-
-                    invoiceText += `\n\nTotal: $${finalBill.total}`;
-
-                    Store.generatePDFInvoice({
-                        order_details: invoiceText,
-                        file_path: `./invoice_${recipientName}.pdf`,
-                    });
-
-                    await Whatsapp.sendText({
-                        message: invoiceText,
-                        recipientPhone: recipientPhone,
-                    });
-
-                    await Whatsapp.sendSimpleButtons({
-                        recipientPhone: recipientPhone,
-                        message: `Thank you for shopping with us, ${recipientName}.\n\nYour order has been received & will be processed shortly.`,
-                        message_id,
-                        listOfButtons: [
-                            {
-                                title: 'See more products',
-                                id: 'see_categories',
-                            },
-                            {
-                                title: 'Print my invoice',
-                                id: 'print_invoice',
-                            },
-                        ],
-                    });
-
-                    clearCart({ recipientPhone });
-                }
-
-                if (button_id === 'print_invoice') {
-                    // Send the PDF invoice
-                    await Whatsapp.sendDocument({
-                        recipientPhone,
-                        caption: `Mom-N-Pop Shop invoice #${recipientName}`,
-                        file_path: `./invoice_${recipientName}.pdf`,
-                    });
-
-                    // Send the location of our pickup station to the customer, so they can come and pick their order
-                    let warehouse = Store.generateRandomGeoLocation();
-
-                    await Whatsapp.sendText({
-                        recipientPhone: recipientPhone,
-                        message: `Your order has been fulfilled. Come and pick it up, as you pay, here:`,
-                    });
-
-                    await Whatsapp.sendLocation({
-                        recipientPhone,
-                        latitude: warehouse.latitude,
-                        longitude: warehouse.longitude,
-                        address: warehouse.address,
-                        name: 'Mom-N-Pop Shop',
-                    });
-                }
-            }
-
-            await Whatsapp.markMessageAsRead({
-                message_id,
+          }
+  
+          if (location.addressByMapbox) {
+            await Whatsapp.sendSimpleButtons({
+              recipientPhone: recipientPhone,
+              message: `Detectamos la siguiente dirección:\n\n${location.addressByMapbox}\n\n¿Es correcta?`,
+              listOfButtons: [
+                {
+                  title: 'Sí',
+                  id: 'is_location_yes',
+                },
+                {
+                  title: 'No',
+                  id: 'is_location_no',
+                },
+              ],
             });
-        }
+            conversation.step++;
+          } else if (location.userText) {
+            await Whatsapp.sendSimpleButtons({
+              recipientPhone: recipientPhone,
+              message: `Detectamos la siguiente ubicación:\n\n${location.userText}\n\n¿Es correcta?`,
+              listOfButtons: [
+                {
+                  title: 'Sí',
+                  id: 'is_location_yes',
+                },
+                {
+                  title: 'No',
+                  id: 'is_location_no',
+                },
+              ],
+            });
+          }
+      } else {
+          await Whatsapp.sendText({
+            recipientPhone: recipientPhone,
+            message: 'No pudimos detectar la dirección o ubicación. Por favor, ingresa nuevamente la dirección con el formato apropiado.',
+          });
+      }
+  
+      if (location) {
+          conversation.data.reportLocation = location;
+      }
 
-        return res.sendStatus(200);
-    } catch (error) {
-        console.error({ error });
-        return res.sendStatus(500);
-    }
+
+      case 8:
+        if ((incomingMessage.button_reply && incomingMessage.button_reply.id === 'is_location_yes' && conversation.data.reportLocation) || incomingMessage.type === 'location_message') {
+          
+           // Llamada a la función para calcular el riesgo y hacer update al driver del riskmatrix.
+          const driverId = conversation.data.vehicle.driverId; // Obtén el driverId de la conversación
+          const risk = await calculateRisk(driverId, conversation.data.reportType, conversation.data.reportLocation, mongoClient);
+          const driver = await driversCollection.findOne({ _id: new ObjectId(driverId) });
+    
+          if (driver) {
+           await driversCollection.updateOne({ _id: driver._id }, { $set: { riskMatrix: risk } });
+            console.log(`Risk Matrix del driverid ${driverId} actualizada a ${risk}`);
+           } else {
+             console.log(`No se encontró ningún conductor con el driverId ${driverId}`);
+          }
+         
+          let reportData = {
+            userPhone: recipientPhone,
+            profileName: recipientName,
+           // companyId: conversation.data.companyId,
+           // driverId: conversation.data.driverId,
+            vehicle: conversation.data.vehicle,
+            reportType: conversation.data.reportType,
+            reportDetails: conversation.data.reportDetails,
+            reportMedia: conversation.data.media,
+            reportLocation: conversation.data.reportLocation,
+            additionalDetails: conversation.data.additionalDetails,
+            reportId: conversation.uniqueId,
+            date: new Date(),
+          };
+          await reportsCollection.insertOne(reportData);
+          await Whatsapp.sendText({
+            recipientPhone: recipientPhone,
+            message: '*Hemos registrado tu reporte exitosamente*. Gracias por ayudarnos a mejorar la seguridad vial.',
+          });
+          conversation.isCompleted = true;
+          conversation.step = 0;
+        } else if (incomingMessage.button_reply && incomingMessage.button_reply.id === 'is_location_no') {
+          await Whatsapp.sendText({
+            recipientPhone: recipientPhone,
+            message: 'Lo siento por el error. Por favor, envia o ingresa nuevamente la dirección con el formato apropiado.',
+          });
+          conversation.step = 7;
+        } else if (incomingMessage.type !== 'text_message') {
+          await Whatsapp.sendSimpleButtons({
+            recipientPhone: recipientPhone,
+            message: 'No entendí tu respuesta. ¿Es correcta la dirección?',
+            listOfButtons: [
+              {
+                title: 'Sí',
+                id: 'is_location_yes',
+              },
+              {
+                title: 'No',
+                id: 'is_location_no',
+              },
+            ],
+          });
+      }
+        break;
+  default:
+    console.log(`No se reconoció el paso de la conversación: ${conversation.step}`);
+}
+        
+        await conversationsCollection.updateOne({ _id: conversation._id }, { $set: conversation });
+        await Whatsapp.markMessageAsRead({
+          message_id: message_id,
+        });
+        return res.sendStatus(200);                 
+  
+} else {
+  console.log('No es un mensaje válido');
+}
+  } catch (error) {
+    console.error('Error:', error);
+  }
 });
 
 module.exports = router;
