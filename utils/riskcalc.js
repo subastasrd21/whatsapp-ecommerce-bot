@@ -41,10 +41,10 @@ async function calculateRisk(driverId, reportType, reportLocation, client) {
         riskScoreTotal += riskScore[report.reportType];
   
         // Compara la ubicación de este informe con los informes previos de los últimos 3 meses
-        const currReportDate = new Date(report.timestamp.$date);
+        const currReportDate = new Date(report.date.$date);
         for (let j = 0; j < i; j++) {
           const prevReport = reports[j];
-          const prevReportDate = new Date(prevReport.timestamp.$date);
+          const prevReportDate = new Date(prevReport.date.$date);
   
           // Si el informe anterior es mayor a 3 meses, salta este informe
           if (currReportDate - prevReportDate > THREE_MONTHS_MS) {

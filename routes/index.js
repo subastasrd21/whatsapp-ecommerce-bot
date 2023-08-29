@@ -42,7 +42,7 @@ const Whatsapp = new WhatsappCloudAPI({
 
 router.get('/meta_wa_driports_callbackurl', (req, res) => {
   try {
-    console.log('GET: Someone is pinging me!');
+    // console.log('GET: Someone is pinging me!');
 
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
@@ -60,7 +60,7 @@ router.get('/meta_wa_driports_callbackurl', (req, res) => {
 });
 
 router.post('/meta_wa_driports_callbackurl', async (req, res) => {
-  console.log('POST: Someone is pinging me!');
+  // console.log('POST: Someone is pinging me!');
   try {
     let data = Whatsapp.parseMessage(req.body);
 
@@ -72,11 +72,30 @@ router.post('/meta_wa_driports_callbackurl', async (req, res) => {
       let typeOfMsg = incomingMessage.type
       let message_id = incomingMessage.message_id
 
-      let conversation = await conversationsCollection.findOne({ sender: recipientPhone, isCompleted: false });
-      console.log('Todos los mensajes:');
-      if (data.isMessage) {
-        console.log(incomingMessage);
+      console.log(`Received message: ${incomingText} from ${recipientPhone}`);
+
+      if (incomingText && incomingText.toLowerCase() === 'reset') {
+        console.log('Reset command received. Resetting conversation.');
+        
+        const result = await conversationsCollection.deleteOne({ sender: recipientPhone, isCompleted: false });
+      
+        if (result.deletedCount === 0) {
+          console.log('No conversation found to reset.');
+        } else {
+          console.log('Deleted conversation:', result);
+        }
+        
+        await Whatsapp.sendText({
+          recipientPhone: recipientPhone,
+          message: 'La conversación ha sido reiniciada. Vamos a empezar de nuevo.',
+        });
       }
+      
+
+      let conversation = await conversationsCollection.findOne({ sender: recipientPhone, isCompleted: false });
+      // if (data.isMessage) {
+      //   console.log(incomingMessage);
+      // }
 
       if (!conversation) {
         const uniqueId = uuidv4();
@@ -107,7 +126,7 @@ router.post('/meta_wa_driports_callbackurl', async (req, res) => {
       }
 
       const messageLowerCase = incomingText.toLowerCase();
-      const match = messageLowerCase.match(/^stickerid: (\w+)$/);
+      const match = messageLowerCase.match(/stickerid: (\w+)$/);
       let vehicle = null;
 
   switch (conversation.step) {
@@ -478,7 +497,7 @@ case 5:
           let reportData = {
             userPhone: recipientPhone,
             profileName: recipientName,
-           // companyId: conversation.data.companyId,
+            companyId: conversation.data.vehicle.companyId,
            // driverId: conversation.data.driverId,
             vehicle: conversation.data.vehicle,
             reportType: conversation.data.reportType,
@@ -530,7 +549,7 @@ case 5:
         return res.sendStatus(200);                 
   
 } else {
-  console.log('No es un mensaje válido');
+  // console.log('No es un mensaje válido');
 }
   } catch (error) {
     console.error('Error:', error);
