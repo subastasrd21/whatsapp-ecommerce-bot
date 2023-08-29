@@ -549,7 +549,7 @@ case 5:
         return res.sendStatus(200);                 
   
 } else {
-  // console.log('No es un mensaje válido');
+  console.log('No es un mensaje válido');
 }
   } catch (error) {
     console.error('Error:', error);
