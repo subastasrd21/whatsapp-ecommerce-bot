@@ -6,13 +6,15 @@ const production = {
 const development = {
     ...process.env,
     NODE_ENV: process.env.NODE_ENV || 'development',
-    PORT: '7000',
+    PORT: '4000',
+    DB: 'mongodb+srv://secureapp:xwtjbuZGXRjYD1nf@cluster0.gahyus1.mongodb.net/',
     Meta_WA_VerifyToken: 'VERIFY',
-    Meta_WA_accessToken: 'EAADWGLZAMwMkBOzZCvuDKHSZCXIZCwF3kZBEJFmBncZACT0ywrNqrZCS6I1rXTd0omNqnYSmuZCakS1pYImCwrkc1wEpqkZBTEOZBqxz435LkxAb6SktahsKsu0mhAndaOUmabZAfifkvL6eiZALZAhfZAFZBQz9ZC0UeUEJjhpV1uYqd7nphFizJLHqscdb0Ymi6Y0LwbZBZBkKvrNpF7UlAdt54ZD',
+    Meta_WA_accessToken:
+        'EAADWGLZAMwMkBO4PRaq1EcSGxYtQ1YaKQfIhFo9jU0PmJLP0Llh7uQeuavZCXNf8ew4evVCq1HvzjxjZAV21SBISxuEwjdw8IZCmJ9exP8J1cHSS4vRy2dMZBGkZBv8Busiy0eh3CiwksWYiQAPP7PfB2N348ADhjcXZAqXbOMOTVWvlmGBqdem08GQ9xTrNVjlqaBjWPzB5Tfmyn0ZD',
     Meta_WA_SenderPhoneNumberId: '105976365901478',
     Meta_WA_wabaId: '109456812217101',
-    AWS_KeyId: `AKIAQXQXO7HQZS4ANHGH`,
-    AWS_secretAccessKey: `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`,
+    AWS_KeyId: `AKIAQXQXO7HQ3SWU2LWE`,
+    AWS_secretAccessKey: `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`,
     MapboxApiKey: `pk.eyJ1Ijoic2VjdXJlYXBwIiwiYSI6ImNsaXo4MWtmMjA0eHQzZ3FiZDRwNTh5OTMifQ.NAKC3bDfGRKqN55TVqnHug`,
 };
 
