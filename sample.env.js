@@ -11,8 +11,8 @@ const development = {
     Meta_WA_accessToken: 'EAADWGLZAMwMkBOzZCvuDKHSZCXIZCwF3kZBEJFmBncZACT0ywrNqrZCS6I1rXTd0omNqnYSmuZCakS1pYImCwrkc1wEpqkZBTEOZBqxz435LkxAb6SktahsKsu0mhAndaOUmabZAfifkvL6eiZALZAhfZAFZBQz9ZC0UeUEJjhpV1uYqd7nphFizJLHqscdb0Ymi6Y0LwbZBZBkKvrNpF7UlAdt54ZD',
     Meta_WA_SenderPhoneNumberId: '105976365901478',
     Meta_WA_wabaId: '109456812217101',
-    AWS_KeyId: `AKIAQXQXO7HQZS4ANHGH`,
-    AWS_secretAccessKey: `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`,
+    AWS_KeyId: `AKIAQXQXO7HQT3HHUP6Y`,
+    AWS_secretAccessKey: `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`,
     MapboxApiKey: `pk.eyJ1Ijoic2VjdXJlYXBwIiwiYSI6ImNsaXo4MWtmMjA0eHQzZ3FiZDRwNTh5OTMifQ.NAKC3bDfGRKqN55TVqnHug`,
 };
 
